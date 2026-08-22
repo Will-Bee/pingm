@@ -4,13 +4,13 @@ TARGET = pingm
 PREFIX = /usr/local/bin
 
 all:
-        $(CXX) $(CXXFLAGS) main.cpp -o $(TARGET)
+	$(CXX) $(CXXFLAGS) main.cpp -o $(TARGET)
 
 clean:
-        rm -f $(TARGET)
+	rm -f $(TARGET)
 
 install: all
-        install -m 755 $(TARGET) $(PREFIX)/$(TARGET)
+	install -m 755 $(TARGET) $(PREFIX)/$(TARGET)
 
 uninstall:
-        rm -f $(PREFIX)/$(TARGET)
+	rm -f $(PREFIX)/$(TARGET)
