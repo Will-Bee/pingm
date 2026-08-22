@@ -11,6 +11,7 @@ clean:
 
 install: all
 	install -m 755 $(TARGET) $(PREFIX)/$(TARGET)
+	setcap cap_net_raw+ep $(PREFIX)/$(TARGET)
 
 uninstall:
 	rm -f $(PREFIX)/$(TARGET)
