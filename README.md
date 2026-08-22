@@ -17,6 +17,7 @@ A blazing-fast, multi-threaded ping utility written in C++ that brings an `mtr`-
 Ensure you have `g++` and `make` installed on your system. Keep `main.cpp` and the `Makefile` in the same directory, then run:
 
 ```
+cd pingm
 make
 sudo make install
 ```
