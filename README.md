@@ -9,6 +9,7 @@ A blazing-fast, multi-threaded ping utility written in C++ that brings an `mtr`-
 * **CIDR & Hostname Support:** Easily scan entire subnets (e.g., 192.168.1.0/24) and resolve domains (e.g., example.com).
 * **Smart Color-Coding:** Instantly spot network degradation with threshold-based colors for latency, packet loss, and jitter.
 * **Decluttered UI:** Offline and dead hosts are automatically dimmed to push them into the background.
+* **Raw Socket Architecture:** Operates with native C++ ICMP raw sockets instead of relying on external system calls.
 
 ---
 
