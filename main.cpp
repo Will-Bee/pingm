@@ -12,12 +12,15 @@
 #include <cstring>
 #include <unistd.h>
 #include <arpa/inet.h>
-#include <netdb.h> // Added for getaddrinfo (DNS resolution)
+#include <netdb.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
 #include <signal.h>
+#include <fcntl.h>
+#include <atomic>
+#include <ncurses.h>
 
 struct HostState {
     std::string ip;
@@ -31,7 +34,7 @@ struct HostState {
     double total_jitter = 0.0;
     int jitter_count = 0;
 
-    std::string status = "\033[33m[WAIT]\033[0m";
+    std::string status = "WAIT";
     bool done = false;
     struct sockaddr_in addr;
 };
@@ -39,12 +42,18 @@ struct HostState {
 std::mutex state_mutex;
 std::vector<HostState> hosts;
 std::chrono::time_point<std::chrono::steady_clock> app_start_time;
+std::atomic<bool> keep_running{true};
 
-// Resolves hostnames (e.g. google.com) to an IPv4 string
+#define C_GRN 1
+#define C_YEL 2
+#define C_RED 3
+#define C_MAG 4
+#define C_DEF 5
+
 std::string resolve_hostname(const std::string& host) {
     struct addrinfo hints, *res;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET; // Force IPv4
+    hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
 
     if (getaddrinfo(host.c_str(), nullptr, &hints, &res) == 0 && res != nullptr) {
@@ -54,10 +63,9 @@ std::string resolve_hostname(const std::string& host) {
         freeaddrinfo(res);
         return std::string(ip_str);
     }
-    return ""; // Failed to resolve
+    return "";
 }
 
-// Standard ICMP checksum calculation
 unsigned short calculate_checksum(void *b, int len) {
     unsigned short *buf = (unsigned short *)b;
     unsigned int sum = 0;
@@ -74,30 +82,108 @@ void print_summary() {
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - app_start_time).count();
 
+    const char* c_rst = "\033[0m";
+    const char* c_dim = "\033[90m";
+    const char* c_grn = "\033[32m";
+    const char* c_yel = "\033[33m";
+    const char* c_red = "\033[31m";
+    const char* c_mag = "\033[35m";
+
+    std::cout << "\n";
+    printf("%-15s | %-6s | %-5s | %-6s | %-4s | %-4s | %-4s | %-6s\n", "IP", "Status", "Tries", "Loss %", "Min", "Max", "Avg", "Jitter");
+    printf("-----------------------------------------------------------------------------\n");
+
     int up_count = 0;
     for (const auto& h : hosts) {
-        if (h.status.find("-UP-") != std::string::npos) up_count++;
+        if (h.status == "-UP-") up_count++;
+
+        int loss = (h.tries > 0) ? ((h.tries - h.successes) * 100) / h.tries : 0;
+        bool is_offline = (h.tries > 0 && h.successes == 0);
+
+        const char *c_ip = c_rst, *c_sep = c_rst, *c_tri = c_rst, *c_los = c_rst;
+        const char *c_min = c_rst, *c_max = c_rst, *c_avg = c_rst, *c_jit = c_rst;
+        const char *c_stat = c_rst;
+
+        if (h.status == "-UP-") c_stat = c_grn;
+        else if (h.status == "DOWN") c_stat = c_red;
+        else c_stat = c_yel;
+
+        if (is_offline) {
+            c_ip = c_dim; c_sep = c_dim; c_tri = c_dim;
+            c_los = c_red;
+            c_min = c_dim; c_max = c_dim; c_avg = c_dim; c_jit = c_dim;
+        } else {
+            if (loss == 0) c_los = c_rst;
+            else if (loss <= 15) c_los = c_yel;
+            else if (loss < 100) c_los = c_mag;
+            else c_los = c_red;
+
+            auto lat_col = [&](double val) {
+                if (val < 50.0) return c_grn;
+                if (val < 150.0) return c_yel;
+                return c_red;
+            };
+
+            if (h.successes > 0) {
+                c_avg = lat_col(h.total_time / h.successes);
+                if (h.min_time != 999999.0) {
+                    c_min = lat_col(h.min_time);
+                    c_max = lat_col(h.max_time);
+                }
+
+                double jit = h.jitter_count > 0 ? (h.total_jitter / h.jitter_count) : 0;
+                if (jit < 5.0) c_jit = c_grn;
+                else if (jit < 15.0) c_jit = c_yel;
+                else c_jit = c_red;
+            }
+        }
+
+        std::string avg_str = "N/a", min_str = "N/a", max_str = "N/a", jit_str = "N/a";
+        if (h.successes > 0) {
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%.0f", h.total_time / h.successes); avg_str = buf;
+
+            if (h.min_time != 999999.0) {
+                snprintf(buf, sizeof(buf), "%.0f", h.min_time); min_str = buf;
+                snprintf(buf, sizeof(buf), "%.0f", h.max_time); max_str = buf;
+            } else {
+                min_str = "<1"; max_str = "<1";
+            }
+
+            if (h.jitter_count > 0) {
+                snprintf(buf, sizeof(buf), "%.0f", h.total_jitter / h.jitter_count); jit_str = buf;
+            } else {
+                jit_str = "0";
+            }
+        }
+
+        printf("%s%-15s%s %s|%s %s[%-4s]%s %s|%s %s%5d%s %s|%s %s%5d%%%s %s|%s %s%4s%s %s|%s %s%4s%s %s|%s %s%4s%s %s|%s %s%6s%s\n",
+               c_ip, h.ip.c_str(), c_rst, c_sep, c_rst,
+               c_stat, h.status.c_str(), c_rst, c_sep, c_rst,
+               c_tri, h.tries, c_rst, c_sep, c_rst,
+               c_los, loss, c_rst, c_sep, c_rst,
+               c_min, min_str.c_str(), c_rst, c_sep, c_rst,
+               c_max, max_str.c_str(), c_rst, c_sep, c_rst,
+               c_avg, avg_str.c_str(), c_rst, c_sep, c_rst,
+               c_jit, jit_str.c_str(), c_rst);
     }
 
-    std::cout << "\033[?25h\n";
     std::cout << "\n--- Pingm Stopped ---\n";
     std::cout << "Total runtime: " << elapsed << " seconds\n";
-    std::cout << "\033[32m" << up_count << "/" << hosts.size() << " IP are UP\033[0m\n\n";
+    std::cout << "\033[32m" << up_count << "/" << hosts.size() << " IP(s) are UP\033[0m\n\n";
 }
 
 void handle_sigint(int sig) {
-    print_summary();
-    exit(0);
+    keep_running = false;
 }
 
 std::vector<std::string> expand_cidr(const std::string& cidr_str) {
     std::vector<std::string> ips;
     auto slash_pos = cidr_str.find('/');
     if (slash_pos == std::string::npos) {
-        // Not a CIDR, check if it's a domain name that needs resolution
         struct in_addr sa;
         if (inet_pton(AF_INET, cidr_str.c_str(), &sa) == 1) {
-            ips.push_back(cidr_str); // Already a valid IP
+            ips.push_back(cidr_str);
         } else {
             std::string resolved = resolve_hostname(cidr_str);
             if (!resolved.empty()) {
@@ -130,8 +216,6 @@ std::vector<std::string> expand_cidr(const std::string& cidr_str) {
     return ips;
 }
 
-#include <fcntl.h> // Make sure this include is at the top of main.cpp!
-
 void ping_worker(int index, int max_pings, int total_hosts, uint16_t pid_id) {
     int stagger_ms = (1000 * index) / total_hosts;
     std::this_thread::sleep_for(std::chrono::milliseconds(stagger_ms));
@@ -139,14 +223,13 @@ void ping_worker(int index, int max_pings, int total_hosts, uint16_t pid_id) {
     int sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
     if (sockfd < 0) return;
 
-    // Set socket to NON-BLOCKING mode so it never freezes waiting for packets
     fcntl(sockfd, F_SETFL, O_NONBLOCK);
 
     uint16_t seq = 1;
     char send_packet[64];
     char recv_packet[1024];
 
-    while (true) {
+    while (keep_running) {
         auto next_tick = std::chrono::steady_clock::now() + std::chrono::seconds(1);
 
         {
@@ -172,11 +255,9 @@ void ping_worker(int index, int max_pings, int total_hosts, uint16_t pid_id) {
         if (sendto(sockfd, send_packet, sizeof(send_packet), 0, (struct sockaddr*)&hosts[index].addr, sizeof(hosts[index].addr)) > 0) {
             struct sockaddr_in r_addr;
             socklen_t addr_len = sizeof(r_addr);
-
-            // Non-blocking listening window (up to 1000ms)
             auto listen_timeout = std::chrono::steady_clock::now() + std::chrono::seconds(1);
 
-            while (std::chrono::steady_clock::now() < listen_timeout) {
+            while (std::chrono::steady_clock::now() < listen_timeout && keep_running) {
                 int bytes = recvfrom(sockfd, recv_packet, sizeof(recv_packet), 0, (struct sockaddr*)&r_addr, &addr_len);
 
                 if (bytes > 0) {
@@ -193,8 +274,6 @@ void ping_worker(int index, int max_pings, int total_hosts, uint16_t pid_id) {
                         break;
                     }
                 }
-
-                // Sleep 1ms to avoid maxing out 100% CPU while checking socket
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
         }
@@ -205,7 +284,7 @@ void ping_worker(int index, int max_pings, int total_hosts, uint16_t pid_id) {
 
             if (is_up) {
                 hosts[index].successes++;
-                hosts[index].status = "\033[32m[-UP-]\033[0m";
+                hosts[index].status = "-UP-";
                 hosts[index].total_time += time_ms;
                 if (time_ms < hosts[index].min_time) hosts[index].min_time = time_ms;
                 if (time_ms > hosts[index].max_time) hosts[index].max_time = time_ms;
@@ -217,7 +296,7 @@ void ping_worker(int index, int max_pings, int total_hosts, uint16_t pid_id) {
                 hosts[index].last_time = time_ms;
 
             } else {
-                hosts[index].status = "\033[31m[DOWN]\033[0m";
+                hosts[index].status = "DOWN";
             }
         }
 
@@ -227,13 +306,12 @@ void ping_worker(int index, int max_pings, int total_hosts, uint16_t pid_id) {
 }
 
 int main(int argc, char* argv[]) {
-    // Test if we can open a raw socket (works for both root AND setcap)
-int test_sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-if (test_sock < 0) {
-    std::cerr << "Error: Raw socket creation failed. Please run with sudo or apply setcap.\n";
-    return 1;
-}
-close(test_sock);
+    int test_sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    if (test_sock < 0) {
+        std::cerr << "Error: Raw socket creation failed. Please run with sudo or apply setcap.\n";
+        return 1;
+    }
+    close(test_sock);
 
     app_start_time = std::chrono::steady_clock::now();
     signal(SIGINT, handle_sigint);
@@ -286,48 +364,80 @@ close(test_sock);
         threads.push_back(std::thread(ping_worker, i, max_pings, total_hosts, pid_id));
     }
 
-    std::cout << "\033[?25l";
-    std::cout << "\033[2J";
+    // Initialize ncurses
+    initscr();
+    cbreak();
+    noecho();
+    keypad(stdscr, TRUE);
+    curs_set(0);      // Hide cursor
+    timeout(100);     // Non-blocking getch() timeout (100ms)
 
-    const char* c_rst = "\033[0m";
-    const char* c_dim = "\033[90m";
-    const char* c_grn = "\033[32m";
-    const char* c_yel = "\033[33m";
-    const char* c_red = "\033[31m";
-    const char* c_mag = "\033[35m";
+    if (has_colors()) {
+        start_color();
+        use_default_colors();
+        init_pair(C_GRN, COLOR_GREEN, -1);
+        init_pair(C_YEL, COLOR_YELLOW, -1);
+        init_pair(C_RED, COLOR_RED, -1);
+        init_pair(C_MAG, COLOR_MAGENTA, -1);
+        init_pair(C_DEF, COLOR_WHITE, -1);
+    }
 
-    while (true) {
-        std::cout << "\033[H";
-        printf("%-15s | %-6s | %-5s | %-6s | %-4s | %-4s | %-4s | %-6s\n", "IP", "Status", "Tries", "Loss %", "Min", "Max", "Avg", "Jitter");
-        printf("-----------------------------------------------------------------------------\n");
+    int scroll_y = 0;
+
+    while (keep_running) {
+        int ch = getch();
+        if (ch == 'q' || ch == 'Q') break;
+
+        int max_y, max_x;
+        getmaxyx(stdscr, max_y, max_x);
+        int max_visible = max_y - 4; // Reserve lines for header and footer
+
+        // Scrolling interactions
+        if (ch == KEY_UP && scroll_y > 0) scroll_y--;
+        if (ch == KEY_DOWN && scroll_y + max_visible < (int)hosts.size()) scroll_y++;
+        if (ch == KEY_PPAGE) scroll_y = std::max(0, scroll_y - max_visible);
+        if (ch == KEY_NPAGE) scroll_y = std::min((int)hosts.size() - max_visible, scroll_y + max_visible);
+
+        erase();
+
+        // Draw Header
+        attron(A_BOLD);
+        mvprintw(0, 0, "%-15s | %-6s | %-5s | %-6s | %-4s | %-4s | %-4s | %-6s", "IP", "Status", "Tries", "Loss %", "Min", "Max", "Avg", "Jitter");
+        mvprintw(1, 0, "-----------------------------------------------------------------------------");
+        attroff(A_BOLD);
 
         bool all_done = true;
+        int row = 2;
 
         {
             std::lock_guard<std::mutex> lock(state_mutex);
-            for (const auto& h : hosts) {
-                if (!h.done) all_done = false;
 
+            // Check if all threads completed their runs
+            for (const auto& h : hosts) {
+                if (!h.done) { all_done = false; break; }
+            }
+
+            // Draw Visible Window
+            for (size_t i = scroll_y; i < hosts.size() && row < max_y - 2; ++i) {
+                const auto& h = hosts[i];
                 int loss = (h.tries > 0) ? ((h.tries - h.successes) * 100) / h.tries : 0;
                 bool is_offline = (h.tries > 0 && h.successes == 0);
 
-                const char *c_ip = c_rst, *c_sep = c_rst, *c_tri = c_rst, *c_los = c_rst;
-                const char *c_min = c_rst, *c_max = c_rst, *c_avg = c_rst, *c_jit = c_rst;
+                int c_los = C_DEF, c_min = C_DEF, c_max = C_DEF, c_avg = C_DEF, c_jit = C_DEF;
+                int c_stat = (h.status == "-UP-") ? C_GRN : ((h.status == "DOWN") ? C_RED : C_YEL);
 
                 if (is_offline) {
-                    c_ip = c_dim; c_sep = c_dim; c_tri = c_dim;
-                    c_los = c_red;
-                    c_min = c_dim; c_max = c_dim; c_avg = c_dim; c_jit = c_dim;
+                    c_los = C_RED;
                 } else {
-                    if (loss == 0) c_los = c_rst;
-                    else if (loss <= 15) c_los = c_yel;
-                    else if (loss < 100) c_los = c_mag;
-                    else c_los = c_red;
+                    if (loss == 0) c_los = C_DEF;
+                    else if (loss <= 15) c_los = C_YEL;
+                    else if (loss < 100) c_los = C_MAG;
+                    else c_los = C_RED;
 
                     auto lat_col = [&](double val) {
-                        if (val < 50.0) return c_grn;
-                        if (val < 150.0) return c_yel;
-                        return c_red;
+                        if (val < 50.0) return C_GRN;
+                        if (val < 150.0) return C_YEL;
+                        return C_RED;
                     };
 
                     if (h.successes > 0) {
@@ -338,17 +448,16 @@ close(test_sock);
                         }
 
                         double jit = h.jitter_count > 0 ? (h.total_jitter / h.jitter_count) : 0;
-                        if (jit < 5.0) c_jit = c_grn;
-                        else if (jit < 15.0) c_jit = c_yel;
-                        else c_jit = c_red;
+                        if (jit < 5.0) c_jit = C_GRN;
+                        else if (jit < 15.0) c_jit = C_YEL;
+                        else c_jit = C_RED;
                     }
                 }
 
                 std::string avg_str = "N/a", min_str = "N/a", max_str = "N/a", jit_str = "N/a";
                 if (h.successes > 0) {
                     char buf[16];
-                    snprintf(buf, sizeof(buf), "%.0f", h.total_time / h.successes);
-                    avg_str = buf;
+                    snprintf(buf, sizeof(buf), "%.0f", h.total_time / h.successes); avg_str = buf;
 
                     if (h.min_time != 999999.0) {
                         snprintf(buf, sizeof(buf), "%.0f", h.min_time); min_str = buf;
@@ -358,32 +467,82 @@ close(test_sock);
                     }
 
                     if (h.jitter_count > 0) {
-                        snprintf(buf, sizeof(buf), "%.0f", h.total_jitter / h.jitter_count);
-                        jit_str = buf;
+                        snprintf(buf, sizeof(buf), "%.0f", h.total_jitter / h.jitter_count); jit_str = buf;
                     } else {
                         jit_str = "0";
                     }
                 }
 
-                printf("%s%-15s%s %s|%s %s %s|%s %s%5d%s %s|%s %s%5d%%%s %s|%s %s%4s%s %s|%s %s%4s%s %s|%s %s%4s%s %s|%s %s%6s%s\033[K\n",
-                       c_ip, h.ip.c_str(), c_rst, c_sep, c_rst, h.status.c_str(), c_sep, c_rst,
-                       c_tri, h.tries, c_rst, c_sep, c_rst, c_los, loss, c_rst, c_sep, c_rst,
-                       c_min, min_str.c_str(), c_rst, c_sep, c_rst, c_max, max_str.c_str(), c_rst,
-                       c_sep, c_rst, c_avg, avg_str.c_str(), c_rst, c_sep, c_rst, c_jit, jit_str.c_str(), c_rst);
-            }
-        }
+                if (is_offline) attron(A_DIM);
+                
+                mvprintw(row, 0, "%-15s | ", h.ip.c_str());
+                
+                attron(COLOR_PAIR(c_stat));
+                printw("%-6s", h.status.c_str());
+                attroff(COLOR_PAIR(c_stat));
+                
+                printw(" | %-5d | ", h.tries);
+                
+                attron(COLOR_PAIR(c_los));
+                std::string loss_str = std::to_string(loss) + "%";
+                printw("%-6s", loss_str.c_str());
+                attroff(COLOR_PAIR(c_los));
+                
+                printw(" | ");
+                
+                attron(COLOR_PAIR(c_min));
+                printw("%-4s", min_str.c_str());
+                attroff(COLOR_PAIR(c_min));
+                
+                printw(" | ");
+                
+                attron(COLOR_PAIR(c_max));
+                printw("%-4s", max_str.c_str());
+                attroff(COLOR_PAIR(c_max));
+                
+                printw(" | ");
+                
+                attron(COLOR_PAIR(c_avg));
+                printw("%-4s", avg_str.c_str());
+                attroff(COLOR_PAIR(c_avg));
+                
+                printw(" | ");
+                
+                attron(COLOR_PAIR(c_jit));
+                printw("%-6s", jit_str.c_str());
+                attroff(COLOR_PAIR(c_jit));
 
-        if (all_done) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                if (is_offline) attroff(A_DIM);
+
+                row++;
+            }
+        } // state_mutex releases here
+
+        // Draw Footer
+        attron(A_BOLD);
+        mvprintw(max_y - 1, 0, "[UP/DOWN/PGUP/PGDN] Scroll  |  [Q] Quit  |  Mode: %s", (max_pings == 0 ? "Continuous" : ("Max " + std::to_string(max_pings) + " Pings").c_str()));
+        attroff(A_BOLD);
+
+        refresh();
+
+        if (max_pings != 0 && all_done) {
+            break;
+        }
     }
 
-    for (auto& t : threads) t.join();
+    // Stop threads and wait for them to finish
+    keep_running = false;
+    for (auto& t : threads) {
+        if (t.joinable()) {
+            t.join();
+        }
+    }
+
+    // Safely exit TUI mode
+    endwin();
+
+    // Print final static results
     print_summary();
+
     return 0;
 }
-
-
-
-
-
-
