@@ -6,7 +6,7 @@ A blazing-fast, multi-threaded ping utility written in C++ that brings an `mtr`-
 
 * **Asynchronous & Fast:** Pings multiple hosts simultaneously using native C++ threads.
 * **Real-Time Dashboard:** 10 FPS UI refresh rate with a MTR like output
-* **CIDR & Hostname Support:** Easily scan entire subnets (e.g., 192.168.1.0/24) and resolve domains (e.g., google.com).
+* **CIDR & Hostname Support:** Easily scan entire subnets (e.g., 192.168.1.0/24) and resolve domains (e.g., example.com).
 * **Smart Color-Coding:** Instantly spot network degradation with threshold-based colors for latency, packet loss, and jitter.
 * **Decluttered UI:** Offline and dead hosts are automatically dimmed to push them into the background.
 
