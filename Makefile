@@ -1,10 +1,11 @@
 CXX = g++
 CXXFLAGS = -std=c++11 -Wall -pthread -O2
+LDLIBS = -lncurses
 TARGET = pingm
 PREFIX = /usr/local/bin
 
 all:
-	$(CXX) $(CXXFLAGS) main.cpp -o $(TARGET)
+	$(CXX) $(CXXFLAGS) main.cpp -o $(TARGET) $(LDLIBS)
 
 clean:
 	rm -f $(TARGET)
