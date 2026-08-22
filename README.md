@@ -40,9 +40,9 @@ sudo apk add g++ make ncurses-dev
 ## Building & Installation
 
 1. Compile the program:
-CODEbash
+```bash
 make
-CODE
+```
 
 2. Install it system-wide (requires root):
 ```bash
