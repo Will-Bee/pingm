@@ -27,7 +27,11 @@ sudo make uninstall
 
 ## Usage
 
-Usage: $ pingm [-t : continuous] [-c count] [ip] [subnet/24] [example.com]
+Usage: 
+
+```
+$ pingm [-t : continuous] [-c count] [ip] [subnet/24] [example.com]
+```
 
 **Examples:**
 
