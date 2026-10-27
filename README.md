@@ -2,7 +2,10 @@
 
 Fast, multi-threaded TUI ICMP ping monitor written in C++.
 
-[PINGM in action](https://github.com/user-attachments/assets/615c2a8e-49ff-4f41-b5c6-0bde5b9a2051)
+<img width="1062" height="534" alt="Pingm in action" src="https://github.com/user-attachments/assets/41a7d029-f646-43dd-925b-ae36c573f947" />
+
+
+
 
 ## Requirements
 
